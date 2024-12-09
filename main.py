@@ -1,27 +1,27 @@
-# main.py
-import sys
-import logging
-from src.web_clipper import WebClipper
-from config import LOG_LEVEL, LOG_FILE
+# # main.py
+# import sys
+# import logging
+# from src.web_clipper import WebClipper
+# from config import LOG_LEVEL, LOG_FILE
 
-logging.basicConfig(level=LOG_LEVEL, filename=LOG_FILE,
-                    format='[%(asctime)s] %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+# logging.basicConfig(level=LOG_LEVEL, filename=LOG_FILE,
+#                     format='[%(asctime)s] %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python main.py <input>")
-        sys.exit(1)
+# def main():
+#     if len(sys.argv) < 2:
+#         print("Usage: python main.py <input>")
+#         sys.exit(1)
 
-    input_str = sys.argv[1]
-    clipper = WebClipper()
-    result = clipper.clip(input_str)
-    if result:
-        print(f"Documentation successfully aggregated to {result}")
-    else:
-        print("No documentation could be aggregated. Check logs for details.")
+#     input_str = sys.argv[1]
+#     clipper = WebClipper()
+#     result = clipper.clip(input_str)
+#     if result:
+#         print(f"Documentation successfully aggregated to {result}")
+#     else:
+#         print("No documentation could be aggregated. Check logs for details.")
 
-if __name__ == "__main__":
-    main()
+# if __name__ == "__main__":
+#     main()
 
 
 

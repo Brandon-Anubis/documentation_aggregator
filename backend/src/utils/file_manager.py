@@ -4,9 +4,11 @@ import markdown
 import pdfkit
 import logging
 from pathlib import Path
+from src.utils.helpers import url_to_filename
 from config import OUTPUT_DIR, INPUT_DIR, PDFKIT_OPTIONS
 
 logger = logging.getLogger(__name__)
+
 
 class FileManager:
     def __init__(self):
@@ -23,30 +25,58 @@ class FileManager:
     def get_input_path(self, filename: str) -> Path:
         return self.INPUT_DIR / filename
 
-    def save_markdown(self, content: str, timestamp: str) -> str:
+    def _generate_filepath(self, base_name: str, timestamp: str, extension: str) -> str:
+        """Generate a filepath with website name and timestamp."""
+        # Remove any path separators and use only the domain part
+        safe_name = base_name.replace("/", "-")
+        return f"{safe_name}-{timestamp}.{extension}"
+
+    def save_markdown(self, content: str, timestamp: str, url: str = None) -> dict:
         try:
-            output_path = self.MARKDOWN_OUTPUT_DIR / f"clipped_{timestamp}.md"
-            with open(output_path, 'w', encoding='utf-8') as f:
+            if url:
+                base_name = url_to_filename(url)
+                filename = self._generate_filepath(base_name, timestamp, "md")
+            else:
+                filename = f"clipped_{timestamp}.md"
+
+            output_path = self.MARKDOWN_OUTPUT_DIR / filename
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(output_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            return str(output_path)
+            return {
+                "full_path": str(output_path),
+                "relative_path": str(output_path.relative_to(self.OUTPUT_DIR)),
+            }
         except Exception as e:
             logger.error(f"Error saving markdown: {e}")
-            return ""
+            return {"full_path": "", "relative_path": ""}
 
-    def save_pdf(self, markdown_content: str, timestamp: str) -> str:
+    def save_pdf(self, markdown_content: str, timestamp: str, url: str = None) -> dict:
         try:
-            output_path = self.PDF_OUTPUT_DIR / f"clipped_{timestamp}.pdf"
+            if url:
+                base_name = url_to_filename(url)
+                filename = self._generate_filepath(base_name, timestamp, "pdf")
+            else:
+                filename = f"clipped_{timestamp}.pdf"
+
+            output_path = self.PDF_OUTPUT_DIR / filename
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+
             html_content = self._create_styled_html(markdown_content)
             pdfkit.from_string(html_content, str(output_path), options=PDFKIT_OPTIONS)
-            return str(output_path)
+            return {
+                "full_path": str(output_path),
+                "relative_path": str(output_path.relative_to(self.OUTPUT_DIR)),
+            }
         except Exception as e:
-            logger.error(f"Error saving PDF: {e}")
-            return ""
+            logger.error(f"Error saving PDF: {e}", exc_info=True)
+            return {"full_path": "", "relative_path": ""}
 
     def _create_styled_html(self, markdown_content: str) -> str:
         html_content = markdown.markdown(
             markdown_content,
-            extensions=['tables', 'fenced_code', 'codehilite', 'toc', 'sane_lists']
+            extensions=["tables", "fenced_code", "codehilite", "toc", "sane_lists"],
         )
 
         return f"""
