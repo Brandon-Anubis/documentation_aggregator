@@ -1,24 +1,53 @@
+# src/web_clipper.py
 import logging
+from urllib.parse import urlparse
 import uuid
 import os
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Query
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
+from pydantic import BaseModel, Field
+from typing import List, Optional
 
 from src.web_clipper import WebClipper
 from src.utils.file_manager import FileManager
 from src.utils.validation import URLValidator
 from src.utils.helpers import guess_input_type
 from src.utils.input_handler import InputHandler
+from config import OUTPUT_DIR
+from src.database import Database
 
 logger = logging.getLogger(__name__)
+
+# Re-instantiate here because we rely on definitions from current directory
+db = Database()
 
 
 class InputRequest(BaseModel):
     input: str
+
+
+class Tag(BaseModel):
+    name: str
+
+
+class Organization(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+
+
+class ClipRequest(BaseModel):
+    input: str
+    organization: Optional[str] = None
+    tags: Optional[List[str]] = None
+
+
+class UpdateClipRequest(BaseModel):
+    title: Optional[str] = None
+    tags: Optional[List[str]] = None
+    organization: Optional[str] = None
 
 
 app = FastAPI()
@@ -33,52 +62,43 @@ app.add_middleware(
 )
 
 config = {
-    "output_format": "markdown",  # or 'pdf' if desired by default
+    "output_format": "markdown",
     "include_metadata": True,
 }
 clipper = WebClipper(config)
 file_manager = FileManager()
 
-results_storage = {}  # Store result metadata here
-
 
 @app.post("/clip")
-async def clip_endpoint(request: InputRequest):
-    input_str = request.input
+async def clip_content(request: ClipRequest):
+    try:
+        result_id = str(uuid.uuid4())
 
-    # Get the result from the clipper
-    result = await clipper.clip(input_str)
-    if not result:
-        raise HTTPException(status_code=500, detail="Failed to process content")
+        # Pass tags and other metadata to the clipper for improved formatting
+        # The web_clipper internally calls `generate_markdown`.
+        result = await clipper.clip(request.input, result_id, tags=request.tags)
+        if result["status"] == "failed":
+            raise HTTPException(status_code=500, detail=result["error"])
 
-    # Extract website name from the URL
-    from urllib.parse import urlparse
+        # Store in database
+        db_result = {
+            "id": result_id,
+            "title": result["title"],
+            "url": result["url"],
+            "markdown_path": result["markdown_path"],
+            "pdf_path": result["pdf_path"],
+            "organization": request.organization,
+            "tags": request.tags or [],
+            "timestamp": result["timestamp"],
+        }
+        db.add_result(result_id, db_result)
 
-    parsed_url = urlparse(input_str)
-    website_name = parsed_url.netloc.replace("www.", "")
+        result["id"] = result_id
+        return result
 
-    # Generate a unique ID for this result
-    result_id = str(uuid.uuid4())
-
-    # Store the result with all necessary information
-    result_data = {
-        "id": result_id,
-        "title": website_name,
-        "url": input_str,
-        "website_name": website_name,
-        "markdown_path": result.get("relative_path"),
-        "pdf_path": (
-            result.get("relative_path", "")
-            .replace("markdown/", "pdf/")
-            .replace(".md", ".pdf")
-            if result.get("relative_path")
-            else None
-        ),
-        "timestamp": datetime.utcnow().strftime("%Y-%m-%d_%H-%M-%S"),
-    }
-
-    results_storage[result_id] = result_data
-    return result_data
+    except Exception as e:
+        logger.error(f"Error in clip endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/upload_file")
@@ -94,44 +114,76 @@ async def upload_file_endpoint(file: UploadFile = File(...)):
 
 
 @app.get("/results")
-async def list_results():
-    all_results = []
-    for r in results_storage.values():
-        all_results.append(
-            {
-                "id": r["id"],
-                "title": r["title"],
-                "url": r["url"],
-                "website_name": r.get("website_name"),
-                "markdown_path": r["markdown_path"],
-                "pdf_path": r["pdf_path"],
-                "timestamp": r["timestamp"],
-            }
-        )
-    return all_results
+async def get_results(
+    search: str = None,
+    organization: str = None,
+    sort_by: str = "date",
+    page: int = Query(1, ge=1),
+    per_page: int = Query(10, ge=1, le=100),
+):
+    return db.get_results(page, per_page, search, organization)
 
 
-@app.get("/results/{result_id}")
-async def get_result(result_id: str):
-    if result_id not in results_storage:
+@app.put("/results/{result_id}")
+async def update_result(result_id: str, request: UpdateClipRequest):
+    result = db.update_result(result_id, request.dict())
+    if result is None:
         raise HTTPException(status_code=404, detail="Result not found")
-    return results_storage[result_id]
+    return {"message": "Result updated successfully"}
 
 
-@app.get("/download/{filename:path}")
-async def download_file(filename: str):
-    # Check for Markdown file
-    markdown_path = file_manager.OUTPUT_DIR / filename
-    if markdown_path.exists():
-        return FileResponse(
-            markdown_path, media_type="text/markdown", filename=filename.split("/")[-1]
+@app.delete("/results/{result_id}")
+async def delete_result(result_id: str):
+    result = db.delete_result(result_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Result not found")
+    return {"message": "Result deleted successfully"}
+
+
+@app.get("/organizations")
+async def get_organizations():
+    return db.get_organizations()
+
+
+@app.post("/organizations")
+async def create_organization(org: Organization):
+    org_id = str(uuid.uuid4())
+    db.add_organization(org_id, org.name, org.description)
+    return {"id": org_id, "name": org.name, "description": org.description}
+
+
+@app.get("/tags")
+async def get_tags():
+    return db.get_tags()
+
+
+@app.get("/download/{result_id}/{format}")
+async def download_file(result_id: str, format: str):
+    result = db.get_result(result_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Result not found")
+
+    file_path = None
+    if format == "markdown":
+        file_path = os.path.join(OUTPUT_DIR, result["markdown_path"])
+    elif format == "pdf":
+        file_path = os.path.join(OUTPUT_DIR, result["pdf_path"])
+    else:
+        raise HTTPException(status_code=400, detail="Invalid format")
+
+    if not os.path.exists(file_path):
+        logger.error(f"File not found: {file_path}")
+        raise HTTPException(
+            status_code=404, detail=f"File not found: {os.path.basename(file_path)}"
         )
 
-    # Check for PDF file
-    pdf_path = file_manager.OUTPUT_DIR / filename
-    if pdf_path.exists():
-        return FileResponse(
-            pdf_path, media_type="application/pdf", filename=filename.split("/")[-1]
-        )
+    return FileResponse(
+        file_path,
+        filename=os.path.basename(file_path),
+        media_type="application/pdf" if format == "pdf" else "text/markdown",
+    )
 
-    raise HTTPException(status_code=404, detail="File not found")
+
+@app.get("/stats")
+async def get_stats():
+    return db.get_stats()
