@@ -32,9 +32,11 @@ import {
   FilterList,
   Description as MarkdownIcon,
   PictureAsPdf as PdfIcon,
+  Visibility,
 } from "@mui/icons-material";
 import { format } from "date-fns";
 import { API_BASE_URL } from "../config";
+import { CircularProgress } from "@mui/material";
 
 interface Result {
   id: string;
@@ -48,8 +50,8 @@ interface Result {
 }
 
 interface ResultsResponse {
-  results: Result[];
-  total: number;
+  items: Result[];
+  total_pages: number;
   page: number;
   per_page: number;
 }
@@ -67,6 +69,9 @@ const Results: FC = () => {
   const [editTitle, setEditTitle] = useState("");
   const [editTags, setEditTags] = useState<string[]>([]);
   const [organizations, setOrganizations] = useState<string[]>([]);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   useEffect(() => {
     fetchResults();
@@ -84,8 +89,8 @@ const Results: FC = () => {
 
       const response = await fetch(`${API_BASE_URL}/results?${params}`);
       const data: ResultsResponse = await response.json();
-      setResults(data.results);
-      setTotalPages(Math.ceil(data.total / data.per_page));
+      setResults(data.items);
+      setTotalPages(data.total_pages);
     } catch (error) {
       console.error("Error fetching results:", error);
     } finally {
@@ -152,6 +157,25 @@ const Results: FC = () => {
   const handleOrganizationChange = (event: SelectChangeEvent) => {
     setOrganization(event.target.value);
     setPage(1);
+  };
+
+  const handlePreview = async (result: Result) => {
+    setPreviewOpen(true);
+    setPreviewLoading(true);
+    try {
+      const res = await fetch(`${API_BASE_URL}/preview/${result.id}`);
+      const data = await res.json();
+      setPreviewHtml(data.html || "<p>No preview available</p>");
+    } catch (e) {
+      setPreviewHtml("<p>Error loading preview</p>");
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const handlePreviewClose = () => {
+    setPreviewOpen(false);
+    setPreviewHtml(null);
   };
 
   return (
@@ -270,6 +294,11 @@ const Results: FC = () => {
                     <IconButton onClick={(e) => handleMenuOpen(e, result)}>
                       <MoreVert />
                     </IconButton>
+                    <Tooltip title="Preview">
+                      <IconButton onClick={() => handlePreview(result)}>
+                        <Visibility />
+                      </IconButton>
+                    </Tooltip>
                   </Box>
                 </Box>
               </CardContent>
@@ -338,6 +367,20 @@ const Results: FC = () => {
             Save
           </Button>
         </DialogActions>
+      </Dialog>
+
+      {/* Preview Dialog */}
+      <Dialog open={previewOpen} onClose={handlePreviewClose} maxWidth="md" fullWidth>
+        <DialogTitle>Preview</DialogTitle>
+        <DialogContent dividers>
+          {previewLoading ? (
+            <Box sx={{ display: "flex", justifyContent: "center", p: 4 }}>
+              <CircularProgress />
+            </Box>
+          ) : (
+            <div dangerouslySetInnerHTML={{ __html: previewHtml || "" }} />
+          )}
+        </DialogContent>
       </Dialog>
     </Box>
   );

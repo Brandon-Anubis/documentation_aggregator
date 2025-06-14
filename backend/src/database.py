@@ -224,7 +224,10 @@ class Database:
                     all_tags.update(tags)
             return sorted(list(all_tags))
 
+    # ----------------- NEW METHODS -----------------
+
     def get_result(self, result_id: str):
+        """Return a single result row by id or None."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM results WHERE id = ?", (result_id,))

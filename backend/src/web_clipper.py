@@ -1,22 +1,36 @@
-# src/web_clipper.py
+"""
+WebClipper class for fetching and processing web content.
+"""
+
 import asyncio
-import logging
 from datetime import datetime
-from typing import Optional, List
-from src.processors.content_processor import ContentProcessor
-from src.utils.file_manager import FileManager
-from src.utils.input_handler import InputHandler
+import logging
 import os
-from urllib.parse import urlparse
-from src.utils.helpers import clean_text, url_to_filename
+from typing import List, Optional
+
 import aiohttp
+import async_timeout
 from bs4 import BeautifulSoup
-from config import USER_AGENT, MAX_CONCURRENT_REQUESTS, OUTPUT_DIR
+from playwright.async_api import Error as PlaywrightError
+
+from config import (
+    MAX_CONCURRENT_REQUESTS,
+    OUTPUT_DIR,
+    USER_AGENT,
+    USE_PLAYWRIGHT_FOR_JS_CONTENT,
+)
+from src.processors.content_processor import ContentProcessor
+from src.utils.crawler import WebCrawler
+from src.utils.file_manager import FileManager
+from src.utils.helpers import url_to_filename
+from src.utils.input_handler import InputHandler
 
 logger = logging.getLogger(__name__)
 
 
 class WebClipper:
+    """WebClipper class for fetching and processing web content."""
+
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
         self.file_manager = FileManager()
@@ -28,17 +42,77 @@ class WebClipper:
         self.output_dir = self.config.get("output_dir", OUTPUT_DIR)
         os.makedirs(self.output_dir, exist_ok=True)
 
-    async def _fetch_content(self, url: str) -> tuple[str, str]:
-        """Fetch title and raw text content from URL."""
-        async with aiohttp.ClientSession(headers={"User-Agent": USER_AGENT}) as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    raise Exception(f"Failed to fetch URL: {response.status}")
-                html = await response.text()
-                soup = BeautifulSoup(html, "html.parser")
-                title = soup.title.string if soup.title else url_to_filename(url)
-                content = clean_text(soup.get_text())
-                return title, content
+    async def _fetch_content(self, url: str) -> Optional[tuple[str, str]]:
+        """Fetch title and HTML content from URL, using Playwright or aiohttp."""
+        html_content = None
+        if USE_PLAYWRIGHT_FOR_JS_CONTENT:
+            logger.info(f"Fetching {url} with Playwright via WebClipper._fetch_content")
+            crawler = WebCrawler(base_url=url)  # Instantiate WebCrawler locally
+            try:
+                html_content = await crawler.fetch_with_playwright(url)
+                if not html_content:
+                    logger.warning(
+                        f"Playwright failed to fetch {url} in WebClipper._fetch_content, returning None."
+                    )
+                    return None
+            except PlaywrightError as e:
+                logger.error(
+                    f"Playwright error in WebClipper._fetch_content for {url}: {e}"
+                )
+                return None
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"Playwright timeout in WebClipper._fetch_content for {url}"
+                )
+                return None
+            except Exception as e:
+                logger.error(
+                    f"Generic error during Playwright fetch in WebClipper._fetch_content for {url}: {e}"
+                )
+                return None
+        else:
+            logger.info(f"Fetching {url} with aiohttp via WebClipper._fetch_content")
+            try:
+                async with aiohttp.ClientSession(
+                    headers={"User-Agent": USER_AGENT}
+                ) as session:
+                    async with async_timeout.timeout(30):
+                        async with session.get(url) as response:
+                            if (
+                                response.status == 200
+                                and "text/html"
+                                in response.headers.get("Content-Type", "")
+                            ):
+                                html_content = await response.text()
+                            else:
+                                logger.error(
+                                    f"aiohttp failed to fetch {url} in WebClipper: status {response.status}"
+                                )
+                                return None
+            except aiohttp.ClientError as e:
+                logger.error(
+                    f"aiohttp client error in WebClipper._fetch_content for {url}: {e}"
+                )
+                return None
+            except asyncio.TimeoutError:
+                logger.error(f"aiohttp timeout in WebClipper._fetch_content for {url}")
+                return None
+            except Exception as e:
+                logger.error(
+                    f"Generic error during aiohttp fetch in WebClipper._fetch_content for {url}: {e}"
+                )
+                return None
+
+        if not html_content:
+            return None
+
+        soup = BeautifulSoup(html_content, "html.parser")
+        title = (
+            soup.title.string.strip()
+            if soup.title and soup.title.string
+            else url_to_filename(url)
+        )
+        return title, html_content
 
     def _generate_filename(self, title: str, timestamp: str) -> str:
         """Generate a clean filename from title and timestamp."""
@@ -46,9 +120,7 @@ class WebClipper:
         clean_title = clean_title.replace(" ", "-")[:50]
         return f"{clean_title}-{timestamp}"
 
-    async def clip(
-        self, url: str, result_id: str, tags: Optional[List[str]] = None
-    ) -> dict:
+    async def clip(self, url: str, tags: Optional[List[str]] = None) -> dict:
         try:
             if url.endswith("sitemap.xml"):
                 # Handle sitemap
@@ -69,23 +141,18 @@ class WebClipper:
                     tags=tags,
                 )
 
-                base_filename = self._generate_filename(
-                    "aggregated_document", timestamp
-                )
-                markdown_filename = f"{base_filename}.md"
-                markdown_path = os.path.join(self.output_dir, markdown_filename)
-                with open(markdown_path, "w", encoding="utf-8") as f:
-                    f.write(final_doc)
-
-                pdf_filename = f"{base_filename}.pdf"  # PDF stub
+                # Save markdown and PDF using FileManager for consistency
+                md_info = self.file_manager.save_markdown(final_doc, timestamp, url)
+                pdf_info = self.file_manager.save_pdf(final_doc, timestamp, url)
 
                 return {
                     "title": "Aggregated content",
                     "url": url,
-                    "markdown_path": markdown_filename,
-                    "pdf_path": pdf_filename,
+                    "markdown_path": md_info["relative_path"],
+                    "pdf_path": pdf_info["relative_path"],
                     "timestamp": timestamp,
-                    "status": "completed",
+                    "status": "success",
+                    "tags": tags or [],
                     "preview": (
                         final_doc[:500] + "..." if len(final_doc) > 500 else final_doc
                     ),
@@ -93,11 +160,26 @@ class WebClipper:
 
             else:
                 # Handle single URL
-                title, raw_content = await self._fetch_content(url)
+                fetch_result = await self._fetch_content(url)
+                if not fetch_result:
+                    logger.error(
+                        f"Failed to fetch content for single URL: {url} in clip method"
+                    )
+                    # Return an error structure or raise an exception as appropriate
+                    # For now, mimicking existing error return structure from clip method's main try-except
+                    return {
+                        "title": url_to_filename(url),
+                        "url": url,
+                        "status": "failed",
+                        "error": f"Failed to fetch content for {url}",
+                    }
+                title, html_content = fetch_result
                 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 
                 # Extract and clean content (no heading prefix here)
-                extracted_content = self.content_processor.extract_content(raw_content)
+                extracted_content = self.content_processor.extract_content(
+                    html_content
+                )  # Use html_content now
                 content_item = {
                     "url": url,
                     "title": title,
@@ -112,21 +194,18 @@ class WebClipper:
                     tags=tags,
                 )
 
-                base_filename = self._generate_filename(title, timestamp)
-                markdown_filename = f"{base_filename}.md"
-                markdown_path = os.path.join(self.output_dir, markdown_filename)
-                with open(markdown_path, "w", encoding="utf-8") as f:
-                    f.write(final_doc)
-
-                pdf_filename = f"{base_filename}.pdf"  # PDF stub
+                # Save markdown and PDF via FileManager
+                md_info = self.file_manager.save_markdown(final_doc, timestamp, url)
+                pdf_info = self.file_manager.save_pdf(final_doc, timestamp, url)
 
                 return {
                     "title": title,
                     "url": url,
-                    "markdown_path": markdown_filename,
-                    "pdf_path": pdf_filename,
+                    "markdown_path": md_info["relative_path"],
+                    "pdf_path": pdf_info["relative_path"],
                     "timestamp": timestamp,
-                    "status": "completed",
+                    "status": "success",
+                    "tags": tags or [],
                     "preview": (
                         final_doc[:500] + "..." if len(final_doc) > 500 else final_doc
                     ),
@@ -150,30 +229,65 @@ class WebClipper:
             }
 
     async def process_urls(self, urls: list) -> list:
-        import async_timeout
-
         sem = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
         async def fetch_html(u):
-            async with aiohttp.ClientSession(
-                headers={"User-Agent": USER_AGENT}
-            ) as session:
-                async with sem:
-                    try:
-                        async with async_timeout.timeout(30):
-                            async with session.get(u) as response:
-                                if (
-                                    response.status == 200
-                                    and "text/html"
-                                    in response.headers.get("Content-Type", "")
-                                ):
-                                    return await response.text()
-                                else:
-                                    logger.warning(f"Invalid content at {u}")
-                                    return ""
-                    except Exception as e:
-                        logger.error(f"Error fetching {u}: {e}")
-                        return ""
+            if USE_PLAYWRIGHT_FOR_JS_CONTENT:
+                logger.info(f"Fetching {u} with Playwright via WebClipper.process_urls")
+                crawler = WebCrawler(base_url=u)  # Instantiate WebCrawler locally
+                try:
+                    html_text = await crawler.fetch_with_playwright(u)
+                    if not html_text:
+                        logger.warning(
+                            f"Playwright fetch failed for {u} in process_urls, returning empty string."
+                        )
+                    return html_text or ""
+                except PlaywrightError as e:
+                    logger.error(f"Playwright error fetching {u} in process_urls: {e}")
+                    return ""
+                except asyncio.TimeoutError:
+                    logger.error(f"Playwright timeout fetching {u} in process_urls")
+                    return ""
+                except Exception as e:
+                    logger.error(
+                        f"Generic Playwright error fetching {u} in process_urls: {e}"
+                    )
+                    return ""
+            else:
+                logger.info(f"Fetching {u} with aiohttp via WebClipper.process_urls")
+                async with aiohttp.ClientSession(
+                    headers={"User-Agent": USER_AGENT}
+                ) as session:
+                    async with sem:  # sem is defined in the outer scope of process_urls
+                        try:
+                            async with async_timeout.timeout(30):
+                                async with session.get(u) as response:
+                                    if (
+                                        response.status == 200
+                                        and "text/html"
+                                        in response.headers.get("Content-Type", "")
+                                    ):
+                                        return await response.text()
+                                    else:
+                                        logger.warning(
+                                            f"Invalid content at {u} (aiohttp): status {response.status}"
+                                        )
+                                        return ""
+                        except aiohttp.ClientError as e:
+                            logger.error(
+                                f"aiohttp client error fetching {u} in process_urls: {e}"
+                            )
+                            return ""
+                        except asyncio.TimeoutError:
+                            logger.error(
+                                f"Timeout fetching {u} with aiohttp in process_urls"
+                            )
+                            return ""
+                        except Exception as e:
+                            logger.error(
+                                f"Generic error fetching {u} with aiohttp in process_urls: {e}"
+                            )
+                            return ""
 
         async def process_url(u):
             html = await fetch_html(u)

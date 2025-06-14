@@ -1,70 +1,113 @@
 # src/utils/content_cleaner.py
-import re
 import logging
-from typing import List, Optional
-from src.utils.marketing_detector import MarketingContentDetector
+from typing import Optional
+import lxml.html
+import justext
+from justext.utils import get_stoplist
+from config import (
+    JUSCONTENT_ENABLED,
+    JUSCONTENT_DEFAULT_LANGUAGE,
+    JUSCONTENT_LENGTH_LOW,
+    JUSCONTENT_STOPWORDS_HIGH,
+    JUSCONTENT_MAX_LINK_DENSITY,
+)
 
 logger = logging.getLogger(__name__)
 
 class ContentCleaner:
     def __init__(self, config: Optional[dict] = None):
         self.config = config or {}
-        self.marketing_detector = MarketingContentDetector()
-        
-    def clean_content(self, markdown_content: str) -> str:
-        if not markdown_content or not isinstance(markdown_content, str):
-            return ""
+        # JusText parameters will be loaded from config in a subsequent step
 
-        sections = self._split_into_sections(markdown_content)
-        if not sections:
-            return ""
+    def clean_html_with_justext(self, html_content: str, language: str = JUSCONTENT_DEFAULT_LANGUAGE) -> str:
+        """
+        Cleans HTML content by removing boilerplate and non-content paragraphs using JusText.
+        Outputs cleaned HTML.
+        """
+        if not JUSCONTENT_ENABLED:
+            logger.info("JusText cleaning is disabled via config. Returning original HTML.")
+            return html_content
 
-        clean_sections = []
-        for i, section in enumerate(sections):
-            if not section.strip():
-                continue
-
-            if not self._is_marketing_section(section, context=sections, position=i):
-                clean_sections.append(section)
-
-        if not clean_sections:
-            return markdown_content
-
-        return "\n\n".join(clean_sections)
-    
-    def _split_into_sections(self, content: str) -> List[str]:
-        """Split content into logical sections"""
-        # First try splitting by headers
-        sections = re.split(r'\n##?\s+', content)
-        
-        # If no headers found, try splitting by paragraphs
-        if len(sections) <= 1:
-            sections = [s.strip() for s in content.split('\n\n') if s.strip()]
-        
-        return sections
-    
-    def _is_marketing_section(self, section: str, context: List[str], position: int) -> bool:
-        """Determine if a section is marketing content with context awareness"""
-        if not section.strip():
-            return False
+        if not html_content or not isinstance(html_content, str):
+            logger.warning("Empty or invalid HTML content received for JusText cleaning.")
+            return html_content  # Return original if empty or invalid
 
         try:
-            is_marketing = self.marketing_detector.is_marketing_section(section)
+            # Parse HTML with lxml
+            dom = lxml.html.fromstring(html_content)
 
-            # If it's the last section, also check additional indicators
-            if position == len(context) - 1:
-                return is_marketing or self._has_marketing_indicators(section)
+            # Get paragraphs classified by JusText.
+            # Newer versions of jusText (>3.0) no longer accept the dom_root argument.
+            paragraphs = list(
+                justext.justext(
+                    html_content,
+                    get_stoplist(language),
+                    length_low=JUSCONTENT_LENGTH_LOW,
+                    stopwords_high=JUSCONTENT_STOPWORDS_HIGH,
+                    max_link_density=JUSCONTENT_MAX_LINK_DENSITY,
+                )
+            )
 
-            return is_marketing
+            nodes_to_remove = []
+            removed_paragraph_details_for_log = []
+            logger.debug(f"JusText: Processing {len(paragraphs)} paragraphs from HTML content.")
+
+            for i, p in enumerate(paragraphs):
+                text_snippet = (p.text[:75] + '...') if len(p.text) > 75 else p.text
+                # Detailed log for every paragraph processed by JusText
+                logger.debug(
+                    f"JusText classified paragraph {i+1}/{len(paragraphs)}: "
+                    f"class='{p.class_type}', chars={len(p.text)}, "
+                    f"stopwords_density={p.stopwords_density:.2f}, "
+                    f"link_density={p.link_density:.2f}, "
+                    f"final_class='{p.final_class}', " # Added final_class for more detail
+                    f"text_snippet='{text_snippet.strip()}'"
+                )
+
+                if p.class_type == 'bad': # Or consider p.final_class == 'bad'
+                    logger.info(
+                        f"JusText: Marking paragraph {i+1} as '{p.class_type}' and queueing for removal. "
+                        f"Snippet: '{text_snippet.strip()}'"
+                    )
+                    nodes_to_remove.extend(p.html_nodes)
+                    removed_paragraph_details_for_log.append(
+                        f"  - Para {i+1}: Class='{p.class_type}', FinalClass='{p.final_class}', Snippet: '{text_snippet.strip()}', "
+                        f"Len: {p.length}, SW_Dens: {p.stopwords_density:.2f}, Link_Dens: {p.link_density:.2f}"
+                    )
+            
+            if removed_paragraph_details_for_log:
+                logger.info(f"JusText: Summary of removed 'bad' paragraphs ({len(removed_paragraph_details_for_log)} total):")
+                for detail in removed_paragraph_details_for_log:
+                    logger.info(detail)
+            else:
+                logger.info("JusText: No paragraphs classified as 'bad' were marked for removal.")
+            
+            # Remove identified 'bad' nodes from the DOM
+            # Iterate in reverse document order or collect and remove to avoid issues while modifying the tree
+            # For simplicity here, we collect and then remove. Lxml handles removal robustly.
+            for node in set(nodes_to_remove): # Use set to avoid issues if nodes are duplicated
+                parent = node.getparent()
+                if parent is not None:
+                    try:
+                        parent.remove(node)
+                    except Exception as e:
+                        logger.warning(f"JusText: Could not remove node {node.tag} (path: {node.getroottree().getpath(node)}): {e}")
+
+            # Serialize the modified DOM back to HTML
+            cleaned_html = lxml.html.tostring(dom, encoding='unicode')
+            
+            # Check if cleaning resulted in empty content (e.g. if everything was 'bad')
+            # In such a case, it might be better to return the original HTML or a specific marker.
+            # For now, return the (potentially empty) cleaned_html.
+            if not cleaned_html.strip() or cleaned_html.lower() == "<html><body></body></html>":
+                 logger.warning("JusText cleaning resulted in empty HTML. Original HTML might have been all boilerplate.")
+                 # Potentially return original html_content here if preferred over empty
+
+            return cleaned_html
+
+        except lxml.etree.ParserError as e:
+            logger.error(f"LXML parsing error during JusText cleaning: {e}. Returning original HTML.")
+            return html_content # Fallback to original HTML on parsing error
         except Exception as e:
-            logger.warning(f"Error in _is_marketing_section: {e}")
-            return False
-    
-    def _has_marketing_indicators(self, section: str) -> bool:
-        """Check for additional marketing indicators"""
-        doc = self.marketing_detector.nlp(section)
-        return any([
-            doc._.marketing_score > 0.4,
-            len([ent for ent in doc.ents if ent.label_ in ["ORG", "PRODUCT"]]) > 0,
-            any(token.like_url for token in doc)
-        ])
+            logger.error(f"Error during JusText cleaning: {e}. Returning original HTML.", exc_info=True)
+            return html_content # Fallback to original HTML on other errors

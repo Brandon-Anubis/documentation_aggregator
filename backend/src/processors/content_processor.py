@@ -1,17 +1,38 @@
 # src/processors/content_processor.py
 import logging
-import html2text
+import markdownify
 import bleach
 import re
 from datetime import datetime
-from readability import Document
+import trafilatura
 from typing import List
 from bs4 import BeautifulSoup
 from src.utils.content_cleaner import ContentCleaner
 from src.utils.deduplication import SemanticContentCleaner
-from config import EMBEDDING_MODEL
+from config import (
+    EMBEDDING_MODEL, TRAFILATURA_INCLUDE_COMMENTS, TRAFILATURA_INCLUDE_TABLES, 
+    JUSCONTENT_DEFAULT_LANGUAGE, MARKDOWNIFY_HEADING_STYLE, MARKDOWNIFY_BULLET_STYLE, 
+    MARKDOWNIFY_STRIP_TAGS, MARKDOWNIFY_CODE_LANGUAGE_CLASS
+)
 
 logger = logging.getLogger(__name__)
+
+
+def get_code_language(el):
+    """Callback to determine code language from element's class for Markdownify."""
+    if not MARKDOWNIFY_CODE_LANGUAGE_CLASS:
+        return None
+    class_attr = el.get('class', [])
+    # Handle cases where class_attr is a string instead of a list
+    if isinstance(class_attr, str):
+        class_attr = class_attr.split()
+        
+    for cls in class_attr:
+        if cls.startswith('language-'):
+            return cls.replace('language-', '').strip()
+        if cls.startswith('lang-'):
+            return cls.replace('lang-', '').strip()
+    return None  # No language class found
 
 
 def post_process_markdown(content: str) -> str:
@@ -67,15 +88,7 @@ def post_process_markdown(content: str) -> str:
 
 class ContentProcessor:
     def __init__(self):
-        self.markdown_converter = html2text.HTML2Text()
-        self.markdown_converter.ignore_images = False
-        self.markdown_converter.ignore_links = False
-        self.markdown_converter.body_width = 0
-        self.markdown_converter.unicode_snob = True
-        self.markdown_converter.protect_links = True
-        self.markdown_converter.wrap_links = False
-        self.markdown_converter.bypass_tables = False
-
+        # Markdownify is now called directly in extract_content. No class instance for html2text needed.
         self.allowed_tags = list(bleach.sanitizer.ALLOWED_TAGS) + [
             "p",
             "pre",
@@ -125,15 +138,24 @@ class ContentProcessor:
                 logger.warning("Empty HTML content received")
                 return ""
 
-            doc = Document(html)
-            content_html = doc.summary()
-            if not content_html:
-                logger.warning("No content extracted by readability")
-                return ""
+            # Attempt to extract with Trafilatura
+            extracted_html_content = trafilatura.extract(
+                html,
+                include_comments=TRAFILATURA_INCLUDE_COMMENTS,
+                include_tables=TRAFILATURA_INCLUDE_TABLES
+            )
 
-            # Sanitize HTML
+            # If Trafilatura fails or returns no content, use the original HTML as fallback for further processing.
+            # Otherwise, use the extracted content.
+            if not extracted_html_content:
+                logger.warning("Trafilatura extraction failed or returned no content. Falling back to processing raw HTML.")
+                content_to_sanitize = html
+            else:
+                content_to_sanitize = extracted_html_content
+
+            # Sanitize HTML (either extracted or raw)
             sanitized_html = bleach.clean(
-                content_html,
+                content_to_sanitize,
                 tags=self.allowed_tags,
                 attributes=self.allowed_attributes,
                 strip=True,
@@ -143,17 +165,29 @@ class ContentProcessor:
                 logger.warning("Content was empty after sanitization")
                 return ""
 
-            # Convert to markdown
-            markdown_content = self.markdown_converter.handle(sanitized_html)
-            # Remove marketing sections and refine content
-            processed_content = self.content_cleaner.clean_content(markdown_content)
+            # Clean HTML with JusText (language defaults to JUSCONTENT_DEFAULT_LANGUAGE from config)
+            cleaned_html = self.content_cleaner.clean_html_with_justext(sanitized_html)
 
-            # Post-process
-            processed_content = post_process_markdown(processed_content)
-            return processed_content
+            if not cleaned_html.strip():
+                logger.warning("HTML content is empty after JusText cleaning. Skipping markdown conversion.")
+                return "" # Return empty string if nothing is left after cleaning
+
+            # Convert cleaned HTML to markdown using Markdownify with configured options
+            markdown_content = markdownify.markdownify(
+                cleaned_html,
+                heading_style=MARKDOWNIFY_HEADING_STYLE or "ATX",
+                bullets=MARKDOWNIFY_BULLET_STYLE or "*",
+                convert=["img", "table", "pre", "code"],  # Convert these tags to markdown
+                code_language_callback=get_code_language,
+                newline_style="\n\n",
+            )
+
+            # Post-process the markdown from Markdownify
+            final_markdown_content = post_process_markdown(markdown_content)
+            return final_markdown_content
 
         except Exception as e:
-            logger.error(f"Error extracting content: {str(e)}")
+            logger.error(f"Error during content extraction/processing: {str(e)}", exc_info=True)
             return ""
 
     # src/processors/content_processor.py

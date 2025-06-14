@@ -3,3 +3,5 @@ data/
 __pycache__/
 *.log
 .vscode/
+.local/
+.pytest_cache

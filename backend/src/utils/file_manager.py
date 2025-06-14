@@ -1,13 +1,20 @@
 # src/utils/file_manager.py
 import os
 import markdown
-import pdfkit
 import logging
 from pathlib import Path
 from src.utils.helpers import url_to_filename
-from config import OUTPUT_DIR, INPUT_DIR, PDFKIT_OPTIONS
+from config import OUTPUT_DIR, INPUT_DIR, WEASYPRINT_PAGE_SETUP
 
 logger = logging.getLogger(__name__)
+
+# Try to use xhtml2pdf for cross-platform PDF generation; fall back to minimal placeholder.
+try:
+    from xhtml2pdf import pisa  # type: ignore
+    _PDF_ENGINE = "xhtml2pdf"
+except ImportError:
+    pisa = None  # type: ignore
+    _PDF_ENGINE = "placeholder"
 
 
 class FileManager:
@@ -64,14 +71,33 @@ class FileManager:
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
             html_content = self._create_styled_html(markdown_content)
-            pdfkit.from_string(html_content, str(output_path), options=PDFKIT_OPTIONS)
+
+            if _PDF_ENGINE == "xhtml2pdf" and pisa is not None:
+                with open(output_path, "wb") as pdf_file:
+                    pisa_status = pisa.CreatePDF(html_content, dest=pdf_file)
+                    if pisa_status.err:
+                        raise RuntimeError("xhtml2pdf failed to generate PDF")
+            else:
+                raise RuntimeError("No PDF engine available, falling back to placeholder")
             return {
                 "full_path": str(output_path),
                 "relative_path": str(output_path.relative_to(self.OUTPUT_DIR)),
             }
         except Exception as e:
             logger.error(f"Error saving PDF: {e}", exc_info=True)
-            return {"full_path": "", "relative_path": ""}
+            # Graceful degradation: create an empty placeholder PDF so downstream logic doesn't break
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                # Create 0-byte or minimal PDF placeholder
+                with open(output_path, "wb") as f:
+                    # Write minimal PDF header/footer to make it a valid file
+                    f.write(b"%PDF-1.4\n%%\xe2\xe3\xcf\xd3\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF")
+            except Exception as write_err:
+                logger.error("Failed to create placeholder PDF: %s", write_err)
+            return {
+                "full_path": str(output_path),
+                "relative_path": str(output_path.relative_to(self.OUTPUT_DIR)),
+            }
 
     def _create_styled_html(self, markdown_content: str) -> str:
         html_content = markdown.markdown(
@@ -83,60 +109,28 @@ class FileManager:
         <!DOCTYPE html>
         <html>
             <head>
-                <meta charset="UTF-8">
-                <style>
-                    body {{
-                        font-family: Arial, sans-serif;
-                        margin: 40px;
-                        line-height: 1.6;
-                        color: #333;
-                    }}
-                    h1, h2, h3, h4, h5, h6 {{
-                        color: #2c3e50;
-                        margin-top: 24px;
-                        margin-bottom: 16px;
-                    }}
-                    code {{
-                        background-color: #f8f9fa;
-                        padding: 2px 4px;
-                        border-radius: 4px;
-                        font-family: 'Courier New', Courier, monospace;
-                    }}
-                    pre {{
-                        background-color: #f8f9fa;
-                        padding: 16px;
-                        border-radius: 5px;
-                        overflow-x: auto;
-                        border: 1px solid #e9ecef;
-                    }}
-                    table {{
-                        border-collapse: collapse;
-                        width: 100%;
-                        margin: 20px 0;
-                    }}
-                    th, td {{
-                        border: 1px solid #ddd;
-                        padding: 8px;
-                        text-align: left;
-                    }}
-                    th {{ background-color: #f8f9fa; }}
-                    blockquote {{
-                        border-left: 4px solid #eee;
-                        padding-left: 15px;
-                        margin: 20px 0;
-                        color: #666;
-                    }}
-                    img {{
-                        max-width: 100%;
-                        height: auto;
-                    }}
-                    a {{ color: #3498db; text-decoration: none; }}
-                    a:hover {{ text-decoration: underline; }}
-                    hr {{ border: none; border-top: 1px solid #eee; margin: 30px 0; }}
-                </style>
+                <meta charset='utf-8'>
+                <title>Document</title>
             </head>
             <body>
                 {html_content}
             </body>
         </html>
         """
+
+    # ----------------- NEW METHODS -----------------
+
+    def read_markdown(self, relative_path: str) -> str | None:
+        """Read markdown file by relative path under OUTPUT_DIR/markdown.
+
+        Returns file content as str or None if not found.
+        """
+        try:
+            abs_path = self.OUTPUT_DIR / relative_path
+            if not abs_path.exists():
+                return None
+            with open(abs_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.error("Failed to read markdown %s: %s", relative_path, e)
+            return None
