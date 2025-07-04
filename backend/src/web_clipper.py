@@ -69,21 +69,16 @@ class WebClipper:
                     tags=tags,
                 )
 
-                base_filename = self._generate_filename(
-                    "aggregated_document", timestamp
+                markdown_info = self.file_manager.save_markdown(
+                    final_doc, timestamp, url
                 )
-                markdown_filename = f"{base_filename}.md"
-                markdown_path = os.path.join(self.output_dir, markdown_filename)
-                with open(markdown_path, "w", encoding="utf-8") as f:
-                    f.write(final_doc)
-
-                pdf_filename = f"{base_filename}.pdf"  # PDF stub
+                pdf_info = self.file_manager.save_pdf(final_doc, timestamp, url)
 
                 return {
                     "title": "Aggregated content",
                     "url": url,
-                    "markdown_path": markdown_filename,
-                    "pdf_path": pdf_filename,
+                    "markdown_path": markdown_info["relative_path"],
+                    "pdf_path": pdf_info["relative_path"],
                     "timestamp": timestamp,
                     "status": "completed",
                     "preview": (
@@ -112,19 +107,16 @@ class WebClipper:
                     tags=tags,
                 )
 
-                base_filename = self._generate_filename(title, timestamp)
-                markdown_filename = f"{base_filename}.md"
-                markdown_path = os.path.join(self.output_dir, markdown_filename)
-                with open(markdown_path, "w", encoding="utf-8") as f:
-                    f.write(final_doc)
-
-                pdf_filename = f"{base_filename}.pdf"  # PDF stub
+                markdown_info = self.file_manager.save_markdown(
+                    final_doc, timestamp, url
+                )
+                pdf_info = self.file_manager.save_pdf(final_doc, timestamp, url)
 
                 return {
                     "title": title,
                     "url": url,
-                    "markdown_path": markdown_filename,
-                    "pdf_path": pdf_filename,
+                    "markdown_path": markdown_info["relative_path"],
+                    "pdf_path": pdf_info["relative_path"],
                     "timestamp": timestamp,
                     "status": "completed",
                     "preview": (

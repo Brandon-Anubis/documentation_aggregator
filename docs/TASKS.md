@@ -11,12 +11,12 @@
   - **Status**: Complete
 
 ### Core Development
-- [ ] **TASK-002**: Finalise clipping logic with PDF generation
+- [x] **TASK-002**: Finalise clipping logic with PDF generation
   - **Priority**: High
   - **Effort**: 4h
   - **Dependencies**: TASK-001
   - **Acceptance Criteria**: Markdown and PDF files generated for each clip
-  - **Status**: In Progress
+  - **Status**: Complete
 - [ ] **TASK-003**: Integrate marketing detection and semantic deduplication
   - **Priority**: Medium
   - **Effort**: 4h
@@ -78,10 +78,11 @@
 
 ## Progress Summary
 - **Total Tasks**: 11
-- **Completed**: 1
-- **In Progress**: 1
+- **Completed**: 2
+- **In Progress**: 0
 - **Remaining**: 9
-- **Overall Progress**: 9%
+- **Overall Progress**: 18%
 
 ## Notes
 - Tasks expanded based on code review. Progress will be tracked in future updates.
+- PDF generation integrated via `FileManager.save_pdf` completing TASK-002.
