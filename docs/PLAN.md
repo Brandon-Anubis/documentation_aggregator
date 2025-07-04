@@ -20,7 +20,7 @@
 - **Phase 5**: Prepare production deployment and monitoring setup.
 
 ## Code Review Findings
-- **PDF generation** is stubbed in `WebClipper.clip` and needs integration with `FileManager.save_pdf`.
+- **PDF generation** is now integrated using `FileManager.save_pdf`.
 - **Marketing detection** (`utils/marketing_detector.py`) is unused; integrate into content processing to filter promotional sections.
 - **Semantic deduplication** (`SemanticContentCleaner`) is implemented but never applied when aggregating multiple pages.
 - **File uploads** are stored but not processed. Uploaded markdown or sitemap files should trigger clipping logic.
