@@ -4,6 +4,8 @@
 
 All commits in this repository have been rewritten to have Brandon (brandon@ankhstudio.com) as both the author and committer.
 
+**Total commits converted:** 31
+
 ## Changes Made
 
 ### Original Commit History
@@ -11,6 +13,7 @@ All commits in this repository have been rewritten to have Brandon (brandon@ankh
 Before the conversion, the repository contained commits from multiple authors:
 - **copilot-swe-agent[bot]** (198982749+Copilot@users.noreply.github.com)
 - **Brandon** (brandon@ankhstudio.com) - as author
+- **Brandon Coburn** (brandon@bazingastudios.com) - different email
 - **GitHub** (noreply@github.com) - as committer
 
 ### After Conversion
