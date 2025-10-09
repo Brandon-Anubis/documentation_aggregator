@@ -4,7 +4,11 @@
 
 All commits in this repository have been rewritten to have Brandon (brandon@ankhstudio.com) as both the author and committer.
 
-**Total commits converted:** 56
+**Total commits converted:** 105
+
+All 105 commits now have:
+- Author: Brandon <brandon@ankhstudio.com>
+- Committer: Brandon <brandon@ankhstudio.com>
 
 ## Changes Made
 
